@@ -102,3 +102,33 @@ station_measurements
 -   Only one station (Back Lake) is missing discharge data
 
 -   Other variables are a bit more spotty - especially pH which is only measured at one station
+
+### Get station metadata
+
+Station metadata can only be requested for a specific parameter. As all stations measure water level, I'll use level to get station details.
+
+```{r}
+clean_station_name <- function(oldname) {
+  newname <- str_to_title(oldname)
+  newname <- str_replace(newname, "At", "@")
+  newname
+}
+
+station_details <- get_station_list(
+    parameter_type = "Water Course Level",
+    station_number = station_numbers,
+    return_fields = c(
+      "station_no",
+      "station_longname",
+      "station_latitude",
+      "station_longitude"
+    )
+  )
+
+station_details <- station_details |> 
+  rename(station_name = station_longname) |> 
+  mutate(station_name = clean_station_name(station_name)) |> 
+  left_join(station_measurements, by = join_by("station_no"))
+
+station_details
+```
