@@ -1,0 +1,104 @@
+---
+title: "Inspect available gauge data"
+format: html
+editor: visual
+---
+
+```{r}
+# Using my fork of buzacott/bomWater
+# devtools::install_github('callum-savage/bomWater')
+library(bomWater)
+library(tidyverse)
+```
+
+## Overview
+
+This is an exploratory notebook to see what data is available from gauges along the Narran River.
+
+-   What timeseries variables are available from river gauges along the Narran River?
+
+-   When does each time series start and end?
+
+-   How much data is missing?
+
+-   Is the data reliable?
+
+-   Are the pre-aggregated time-series reliable?
+
+## Get station details
+
+### Identify relevant stations
+
+I am limiting the scope initially to the Narran River, and gauges directly upstream. From Bom Water Data Online, we can see the following stations.
+
+-   The Balonne river flows south through St George, QLD
+-   20 km North of Dirranbandi, the Culgoa River branches off to the west of the Balonne (and away from the Narran Lakes)
+    -   There are two gauges here, and it looks like both may be relevant
+        -   422204A, Culgoa River at Whyenbah
+        -   422205B, Balonne Minor River at Hastings
+-   South of Dirranbandi, the Balonne River branches into the Narran River (eastern) and Bokahra River (western)
+    -   This branching is ungaguged, so the northernmost gauge on the Bokhara River might be important
+        -   422209A, Bokhara River at Hebel
+-   The Narran River passes into NSW terminates at the Narran Wetlands
+    -   QLD
+        -   422206A, Narran River at Dirranbandi-Hebel Road
+    -   NSW
+        -   422016, NARRAN RIVER AT WILBY WILBY (BELVEDERE)
+        -   422030, NARRAN RIVER AT NEW ANGLEDOOL NO. 2
+    -   Narran lakes
+        -   422013, NARRAN RIVER \@ BUNDAH
+        -   422034, NARRAN RIVER \@ BACK LAKE,
+        -   422029, NARRAN RIVER \@ NARRAN PARK
+
+### Check station measurements
+
+See which variables were measured at each station
+
+```{r}
+station_numbers <- c("422204A", "422205B", "422209A", "422206A", "422016",
+                     "422030", "422013", "422034", "422029")
+
+station_parameters <- get_parameter_list(
+    station_number = station_numbers,
+    return_fields = c(
+      "station_no",
+      "parametertype_name",
+      "parametertype_unitname")
+  ) |> 
+  rename(
+    parameter = parametertype_name, 
+    parameter_unit = parametertype_unitname
+  )
+
+station_parameters
+```
+
+Not all stations have each parameter, so create a table explicitly showing which measurements are available at which stations.
+
+```{r}
+# Create a function to shorten parameter names
+shorten_parameter <- function(long_param) {
+  long_param |>
+    str_remove(" @ 25C") |>
+    str_extract("\\w+$") |> # last word
+    str_to_lower()
+}
+
+station_measurements <- station_parameters |>
+  mutate(parameter_short = shorten_parameter(parameter)) |>
+  mutate(measured = TRUE) |>
+  pivot_wider(
+    id_cols = station_no,
+    names_from = parameter_short,
+    values_from = measured,
+    values_fill = FALSE
+  )
+
+station_measurements
+```
+
+-   All stations measure water level
+
+-   Only one station (Back Lake) is missing discharge data
+
+-   Other variables are a bit more spotty - especially pH which is only measured at one station
