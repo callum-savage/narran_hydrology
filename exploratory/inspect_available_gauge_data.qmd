@@ -9,21 +9,25 @@ editor: visual
 # devtools::install_github('callum-savage/bomWater')
 library(bomWater)
 library(tidyverse)
+
+if (!dir.exists(here::here("exploratory/data"))) {
+  dir.create(here::here("exploratory/data"))
+}
 ```
 
 ## Overview
 
-This is an exploratory notebook to see what data is available from gauges along the Narran River.
+This is an exploratory notebook to see what data is available from gauges along the Narran River, import the data, and save it locally.
 
 -   [x] What timeseries variables are available from river gauges along the Narran River?
 
--   [ ] When does each time series start and end?
+-   [x] When does each time series start and end?
 
--   [ ] How much data is missing?
+-   [x] How much data is missing?
 
--   [ ] Is the data reliable?
+-   [x] Is the data reliable?
 
--   [ ] Are the pre-aggregated time-series reliable?
+-   [ ] When should the pre-aggregated time series be used?
 
 ## Get station details
 
@@ -142,9 +146,26 @@ station_details
 
 For each station/parameter combination we can import the data 'as stored' - meaning as provided by the water agency, though with a bit of BOM processing.
 
+### Download data
+
 I'm not sure how to request the period of record (though I think it should be possible), so I'll just request all data since 1900.
 
 ```{r}
+recode_dq <- function(df) {
+  quality_code_conversion <- quality_codes() |> 
+    janitor::clean_names() |> 
+    select(-description)
+  
+  df <- left_join(
+      df, 
+      quality_code_conversion, 
+      by = join_by(quality_code)
+    )
+  df <- select(df, -quality_code)
+  df <- replace_na(df, list(bom_quality_code = "X"))
+}
+
+# Large request, so only do it if the data isn't available locally
 if (!file.exists(here::here("exploratory/data/as_stored.rds"))) {
   as_stored_nested <- station_parameters |>
     rowwise() |>
@@ -162,15 +183,161 @@ if (!file.exists(here::here("exploratory/data/as_stored.rds"))) {
   as_stored <- as_stored_nested |> 
     select(station_no, parameter_short, as_stored) |> 
     unnest(as_stored) |> 
-    janitor::clean_names()
-  
-  # Save output
-  if (!dir.exists(here::here("exploratory/data"))) {
-    dir.create(here::here("exploratory/data"))
-  }
+    janitor::clean_names() |> 
+    recode_dq()
   
   write_rds(as_stored, here::here("exploratory/data/as_stored.rds"))
 } else {
   as_stored <- read_rds(here::here("exploratory/data/as_stored.rds"))
+}
+
+head(as_stored)
+```
+
+### Calculate time series limits
+
+Look at the periods of record for each time series, as well as some basic summary statistics.
+
+```{r}
+station_parameter_summaries <- as_stored |> 
+  group_by(station_no, parameter_short) |> 
+  summarise(
+    start = min(timestamp),
+    end = max(timestamp),
+    n = n(),
+    missing = sum(is.na(value)),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    .groups = "drop"
+  ) |> 
+  mutate(
+    days = interval(start, end) / days(1),
+    years = interval(start, end) / years(1)
+  )
+
+station_parameter_summaries
+```
+
+-   Station 422205B (Balonne-Minor River \@ Hastings) only has 76 days of data, which is probably not enough to use in an analysis. Luckily 422204A is in about the same location.
+
+-   Most other gagues have discharge data going back to 1964/1965, with the exception of gauges 422029 (Narran Park) and 422030 (New Angledool No 2)
+
+    -   I wonder if there's a New Angledool No 1 I'm missing?
+
+-   There's about 8.5 million records overall, though the majority will be from recent decades (automated measurements)
+
+-   Very little data is missing, as you'd expect for 'as stored' data - there's not requirement that data points be equally spaced.
+
+### Inspect data quality codes
+
+Quality code descriptions are as follows:
+
+```{r}
+quality_codes()
+```
+
+From this, we can see that only A quality is truly reliable. We can consider qualities B and C to be usable as well, while E is unknown and F should not be used. I have also coded missing values as X, which obviously can't be used either.
+
+```{r}
+as_stored_quality_counts <- as_stored |> 
+  count(station_no, parameter_short, bom_quality_code) |>
+  pivot_wider(
+    names_from = bom_quality_code,
+    names_glue = "{bom_quality_code}_quality",
+    names_sort = TRUE,
+    values_from = n,
+    values_fill = 0
+  )
+
+as_stored_quality_counts
+```
+
+-   It looks like too much data is E quality to be ignored - for some stations it is almost all of the data.
+
+-   Most of the F quality data is temperature or conductivity, neither of which are a priority for this project.
+
+-   Gauges 422013, 422016, 422029, and 422030 have a particularly large ammount of E quality data (for gague and level) and so should be treated more cautiously. Unfortunately this equates to all of the gauges close to the Narran Lakes.
+
+## Import aggregated time series
+
+I am only going to import the aggregated discharge and level data.
+
+### Hourly
+
+Only get hourly data from 2000 onwards (as the request limit is overloaded otherwise).
+
+The limit is 250000 records, or around 28 years of hourly data.
+
+```{r}
+# Large request, so only do it if the data isn't available locally
+if (!file.exists(here::here("exploratory/data/hourly.rds"))) {
+  hourly_nested <- station_parameters |>
+    filter(parameter_short %in% c("discharge", "level")) |> 
+    rowwise() |>
+    mutate(hourly = list(get_hourly(
+        parameter_type = parameter,
+        station_number = station_no,
+        start_date = "2000-01-01",
+        end_date = Sys.Date(),
+        tz = "Australia/Queensland", # AEST
+        return_fields = c(
+          "Timestamp", 
+          "Value", 
+          "Quality Code", 
+          "Interpolation Type"
+        )
+      ))
+    ) |> 
+    ungroup()
+  
+  hourly <- hourly_nested |> 
+    select(station_no, parameter_short, hourly) |> 
+    unnest(hourly) |> 
+    janitor::clean_names() |> 
+    recode_dq()
+
+  write_rds(as_stored, here::here("exploratory/data/hourly.rds"))
+} else {
+  hourly <- read_rds(here::here("exploratory/data/hourly.rds"))
+}
+```
+
+### Daily
+
+```{r}
+# Large request, so only do it if the data isn't available locally
+if (!file.exists(here::here("exploratory/data/daily.rds"))) {
+  daily_nested <- station_parameters |>
+    filter(parameter_short %in% c("discharge", "level")) |> 
+    rowwise() |>
+    mutate(daily = list(get_daily(
+        parameter_type = parameter,
+        station_number = station_no,
+        start_date = "1900-01-01",
+        end_date = Sys.Date(),
+        var = "mean",
+        aggregation = "24HR",
+        tz = "Australia/Queensland", # AEST
+        return_fields = c(
+          "Timestamp", 
+          "Value", 
+          "Quality Code", 
+          "Interpolation Type"
+        )
+      ))
+    ) |> 
+    ungroup()
+  
+  daily <- daily_nested |> 
+    select(station_no, parameter_short, daily) |> 
+    unnest(daily) |> 
+    janitor::clean_names() |> 
+    recode_dq()
+
+  write_rds(as_stored, here::here("exploratory/data/daily.rds"))
+} else {
+  daily <- read_rds(here::here("exploratory/data/daily.rds"))
 }
 ```
