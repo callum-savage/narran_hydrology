@@ -15,15 +15,15 @@ library(tidyverse)
 
 This is an exploratory notebook to see what data is available from gauges along the Narran River.
 
--   What timeseries variables are available from river gauges along the Narran River?
+-   [x] What timeseries variables are available from river gauges along the Narran River?
 
--   When does each time series start and end?
+-   [ ] When does each time series start and end?
 
--   How much data is missing?
+-   [ ] How much data is missing?
 
--   Is the data reliable?
+-   [ ] Is the data reliable?
 
--   Are the pre-aggregated time-series reliable?
+-   [ ] Are the pre-aggregated time-series reliable?
 
 ## Get station details
 
@@ -70,12 +70,6 @@ station_parameters <- get_parameter_list(
     parameter_unit = parametertype_unitname
   )
 
-station_parameters
-```
-
-Not all stations have each parameter, so create a table explicitly showing which measurements are available at which stations.
-
-```{r}
 # Create a function to shorten parameter names
 shorten_parameter <- function(long_param) {
   long_param |>
@@ -84,8 +78,19 @@ shorten_parameter <- function(long_param) {
     str_to_lower()
 }
 
+station_parameters <- station_parameters |> 
+  mutate(
+    parameter_short = shorten_parameter(parameter),
+    .after = parameter
+  )
+
+station_parameters
+```
+
+Not all stations have each parameter, so create a table explicitly showing which measurements are available at which stations.
+
+```{r}
 station_measurements <- station_parameters |>
-  mutate(parameter_short = shorten_parameter(parameter)) |>
   mutate(measured = TRUE) |>
   pivot_wider(
     id_cols = station_no,
@@ -131,4 +136,41 @@ station_details <- station_details |>
   left_join(station_measurements, by = join_by("station_no"))
 
 station_details
+```
+
+## Import data as stored
+
+For each station/parameter combination we can import the data 'as stored' - meaning as provided by the water agency, though with a bit of BOM processing.
+
+I'm not sure how to request the period of record (though I think it should be possible), so I'll just request all data since 1900.
+
+```{r}
+if (!file.exists(here::here("exploratory/data/as_stored.rds"))) {
+  as_stored_nested <- station_parameters |>
+    rowwise() |>
+    mutate(as_stored = list(get_as_stored(
+        parameter_type = parameter,
+        station_number = station_no,
+        start_date = "1900-01-01",
+        end_date = Sys.Date(),
+        tz = "Australia/Queensland", # AEST
+        return_fields = c("Timestamp", "Value", "Quality Code")
+      ))
+    ) |> 
+    ungroup()
+  
+  as_stored <- as_stored_nested |> 
+    select(station_no, parameter_short, as_stored) |> 
+    unnest(as_stored) |> 
+    janitor::clean_names()
+  
+  # Save output
+  if (!dir.exists(here::here("exploratory/data"))) {
+    dir.create(here::here("exploratory/data"))
+  }
+  
+  write_rds(as_stored, here::here("exploratory/data/as_stored.rds"))
+} else {
+  as_stored <- read_rds(here::here("exploratory/data/as_stored.rds"))
+}
 ```
